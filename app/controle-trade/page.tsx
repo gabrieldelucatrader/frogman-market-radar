@@ -81,63 +81,75 @@ export default function TradeControlPage() {
   const [hydrated, setHydrated] = useState(false);
   const [cloudStatus, setCloudStatus] = useState<"loading" | "online" | "offline">("loading");
   const [pendingSyncIds, setPendingSyncIds] = useState<string[]>([]);
+  const [cloudInitialized, setCloudInitialized] = useState(false);
   const importRef = useRef<HTMLInputElement>(null);
   const entriesRef = useRef<TradeEntry[]>([]);
   const pendingSyncIdsRef = useRef<string[]>([]);
+  const cloudInitializedRef = useRef(false);
+  const fxRateRef = useRef("5.30");
 
   useEffect(() => {
     void (async () => {
       const response = await fetch("/api/auth/me", { cache: "no-store" });
       const payload = response.ok ? await response.json() : null;
-        const session = (payload?.user ?? null) as UserSession | null;
-        const key = `${storagePrefix}:${session?.email ?? "local"}`;
-        setUser(session);
+      const session = (payload?.user ?? null) as UserSession | null;
+      const key = `${storagePrefix}:${session?.email ?? "local"}`;
+      setUser(session);
 
-        try {
-          const stored = JSON.parse(window.localStorage.getItem(key) || "{}");
-          const localEntries = Array.isArray(stored.entries) ? stored.entries as TradeEntry[] : [];
-          const localRate = typeof stored.fxRate === "number" ? stored.fxRate : 5.3;
-          const localPendingIds = Array.isArray(stored.pendingSyncIds) ? stored.pendingSyncIds.filter((id: unknown): id is string => typeof id === "string") : [];
-          setPendingSyncIds(localPendingIds);
-          const cloudResponse = session ? await fetch("/api/trades", { cache: "no-store" }) : null;
+      try {
+        const stored = JSON.parse(window.localStorage.getItem(key) || "{}");
+        const localEntries = Array.isArray(stored.entries) ? stored.entries as TradeEntry[] : [];
+        const localRate = typeof stored.fxRate === "number" ? stored.fxRate : 5.3;
+        const localPendingIds = Array.isArray(stored.pendingSyncIds) ? stored.pendingSyncIds.filter((id: unknown): id is string => typeof id === "string") : [];
+        const localCloudInitialized = stored.cloudInitialized === true;
+        setPendingSyncIds(localPendingIds);
+        setCloudInitialized(localCloudInitialized);
+        const cloudResponse = session ? await fetch("/api/trades", { cache: "no-store" }) : null;
 
-          if (cloudResponse?.ok) {
-            const cloud = await cloudResponse.json() as { entries?: TradeEntry[]; fxRate?: number };
-            const cloudEntries = Array.isArray(cloud.entries) ? cloud.entries : [];
-            setEntries(cloudEntries.length ? cloudEntries : localEntries);
-            setFxRate(String(cloudEntries.length ? cloud.fxRate ?? localRate : localRate));
-            setCloudStatus("online");
+        if (cloudResponse?.ok) {
+          const cloud = await cloudResponse.json() as { entries?: TradeEntry[]; fxRate?: number };
+          const cloudEntries = Array.isArray(cloud.entries) ? cloud.entries : [];
+          const shouldMigrateLocal = !localCloudInitialized && !cloudEntries.length && (localEntries.length > 0 || localRate !== 5.3);
+          setEntries(shouldMigrateLocal ? localEntries : cloudEntries);
+          setFxRate(String(shouldMigrateLocal ? localRate : cloud.fxRate ?? localRate));
+          setCloudStatus("online");
 
-            if (!cloudEntries.length && (localEntries.length || localRate !== 5.3)) {
-              const migrationResponse = await fetch("/api/trades", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ entries: localEntries, fxRate: localRate }) });
-              if (migrationResponse.ok) setPendingSyncIds([]);
-              else {
-                setPendingSyncIds(localEntries.map((entry) => entry.id));
-                setCloudStatus("offline");
-              }
+          if (shouldMigrateLocal) {
+            const migrationResponse = await fetch("/api/trades", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ entries: localEntries, fxRate: localRate }) });
+            if (migrationResponse.ok) {
+              setPendingSyncIds([]);
+              setCloudInitialized(true);
+            } else {
+              setPendingSyncIds(localEntries.map((entry) => entry.id));
+              setCloudStatus("offline");
             }
           } else {
-            setEntries(localEntries);
-            setFxRate(String(localRate));
-            setCloudStatus("offline");
+            setCloudInitialized(true);
           }
-        } catch {
-          setMessage("O arquivo local anterior não pôde ser lido. Importe um backup, se disponível.");
+        } else {
+          setEntries(localEntries);
+          setFxRate(String(localRate));
           setCloudStatus("offline");
-        } finally {
-          setHydrated(true);
         }
+      } catch {
+        setMessage("O arquivo local anterior não pôde ser lido. Importe um backup, se disponível.");
+        setCloudStatus("offline");
+      } finally {
+        setHydrated(true);
+      }
     })();
   }, []);
 
   useEffect(() => {
     if (!hydrated) return;
     const key = `${storagePrefix}:${user?.email ?? "local"}`;
-    window.localStorage.setItem(key, JSON.stringify({ entries, fxRate: numberOf(fxRate), pendingSyncIds }));
-  }, [entries, fxRate, hydrated, pendingSyncIds, user?.email]);
+    window.localStorage.setItem(key, JSON.stringify({ entries, fxRate: numberOf(fxRate), pendingSyncIds, cloudInitialized }));
+  }, [cloudInitialized, entries, fxRate, hydrated, pendingSyncIds, user?.email]);
 
   useEffect(() => { entriesRef.current = entries; }, [entries]);
   useEffect(() => { pendingSyncIdsRef.current = pendingSyncIds; }, [pendingSyncIds]);
+  useEffect(() => { cloudInitializedRef.current = cloudInitialized; }, [cloudInitialized]);
+  useEffect(() => { fxRateRef.current = fxRate; }, [fxRate]);
 
   useEffect(() => {
     if (!hydrated || !user) return;
@@ -153,8 +165,18 @@ export default function TradeControlPage() {
         const response = await fetch("/api/trades", { cache: "no-store" });
         if (!response.ok) { setCloudStatus("offline"); return; }
         const cloud = await response.json() as { entries?: TradeEntry[]; fxRate?: number };
-        if (Array.isArray(cloud.entries)) setEntries(cloud.entries);
+        const cloudEntries = Array.isArray(cloud.entries) ? cloud.entries : [];
+        if (!cloudInitializedRef.current && !cloudEntries.length && entriesRef.current.length) {
+          const migrationResponse = await fetch("/api/trades", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ entries: entriesRef.current, fxRate: numberOf(fxRateRef.current) }) });
+          if (!migrationResponse.ok) { setCloudStatus("offline"); return; }
+          setCloudInitialized(true);
+          setPendingSyncIds([]);
+          setCloudStatus("online");
+          return;
+        }
+        setEntries(cloudEntries);
         if (typeof cloud.fxRate === "number") setFxRate(String(cloud.fxRate));
+        setCloudInitialized(true);
         setCloudStatus("online");
       } catch {
         setCloudStatus("offline");

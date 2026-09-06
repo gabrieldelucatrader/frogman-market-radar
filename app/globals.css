@@ -3,6 +3,13 @@
 :root {
   --background: #ffffff;
   --foreground: #171717;
+  --frogman-bg: #070a08;
+  --frogman-panel: #101510;
+  --frogman-panel-strong: #141b14;
+  --frogman-green: #7ddc12;
+  --frogman-green-soft: #24420e;
+  --frogman-gold: #c6a64f;
+  --frogman-ink: #e8e4d7;
 }
 
 @theme inline {
@@ -22,5 +29,35 @@
 body {
   background: var(--background);
   color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  font-family: var(--font-geist-sans), Arial, Helvetica, sans-serif;
+}
+
+.brand-shell {
+  background:
+    linear-gradient(135deg, rgba(125, 220, 18, 0.08), transparent 34%),
+    linear-gradient(225deg, rgba(198, 166, 79, 0.08), transparent 38%),
+    var(--frogman-bg);
+}
+
+.brand-panel {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.025), transparent),
+    linear-gradient(135deg, rgba(125, 220, 18, 0.055), transparent 42%),
+    var(--frogman-panel);
+}
+
+.brand-panel-strong {
+  background:
+    linear-gradient(145deg, rgba(125, 220, 18, 0.11), transparent 40%),
+    linear-gradient(315deg, rgba(198, 166, 79, 0.09), transparent 42%),
+    var(--frogman-panel-strong);
+}
+
+.brand-rule {
+  background: linear-gradient(90deg, transparent, var(--frogman-green), var(--frogman-gold), transparent);
+}
+
+.brand-wordmark {
+  color: var(--frogman-ink);
+  text-shadow: 0 0 18px rgba(125, 220, 18, 0.18);
 }

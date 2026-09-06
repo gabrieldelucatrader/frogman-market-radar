@@ -671,6 +671,12 @@ export default function Home() {
             >
               Internacional
             </Link>
+            <Link
+              href="/controle-trade"
+              className="rounded px-4 py-2 text-zinc-400 transition hover:text-white"
+            >
+              Controle
+            </Link>
           </nav>
 
           <div className="flex flex-wrap items-center gap-2">

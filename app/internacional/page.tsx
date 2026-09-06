@@ -193,6 +193,7 @@ export default function InternationalRadarPage() {
           <nav className="flex rounded border border-[#2b3a1d] bg-black/30 p-1 text-xs font-black uppercase tracking-[0.12em]">
             <Link href="/" className="rounded px-4 py-2 text-zinc-400 transition hover:text-white">B3 / WIN</Link>
             <Link href="/internacional" className="rounded bg-[#7ddc12] px-4 py-2 text-black">Internacional</Link>
+            <Link href="/controle-trade" className="rounded px-4 py-2 text-zinc-400 transition hover:text-white">Controle</Link>
           </nav>
 
           <div className="flex flex-wrap items-center gap-2 text-xs">

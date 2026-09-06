@@ -41,6 +41,13 @@ export default function manifest(): MetadataRoute.Manifest {
         url: "/",
         icons: [{ src: "/icons/icon-192.png", sizes: "192x192" }],
       },
+      {
+        name: "Controle de Trade",
+        short_name: "Controle",
+        description: "Abrir o controle financeiro de operações.",
+        url: "/controle-trade",
+        icons: [{ src: "/icons/icon-192.png", sizes: "192x192" }],
+      },
     ],
   };
 }

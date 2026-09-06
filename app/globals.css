@@ -33,24 +33,43 @@ body {
 }
 
 .brand-shell {
+  position: relative;
+  isolation: isolate;
   background:
-    linear-gradient(135deg, rgba(125, 220, 18, 0.08), transparent 34%),
+    linear-gradient(180deg, rgba(3, 8, 7, 0.78), rgba(4, 9, 7, 0.92) 58%, rgba(3, 7, 5, 0.97)),
+    linear-gradient(135deg, rgba(125, 220, 18, 0.1), transparent 34%),
     linear-gradient(225deg, rgba(198, 166, 79, 0.08), transparent 38%),
+    url("/frogman-institutional-ocean-desktop.webp") center top / cover fixed,
     var(--frogman-bg);
+}
+
+.brand-shell::before {
+  position: fixed;
+  z-index: -1;
+  inset: 0;
+  background:
+    radial-gradient(circle at 18% 16%, rgba(125, 220, 18, 0.07), transparent 28%),
+    linear-gradient(90deg, rgba(0, 0, 0, 0.1), transparent 45%, rgba(0, 0, 0, 0.16));
+  content: "";
+  pointer-events: none;
 }
 
 .brand-panel {
   background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.025), transparent),
-    linear-gradient(135deg, rgba(125, 220, 18, 0.055), transparent 42%),
-    var(--frogman-panel);
+    linear-gradient(180deg, rgba(255, 255, 255, 0.035), transparent),
+    linear-gradient(135deg, rgba(125, 220, 18, 0.06), transparent 42%),
+    rgba(9, 15, 11, 0.91);
+  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.22), inset 0 1px rgba(255, 255, 255, 0.025);
+  backdrop-filter: blur(14px);
 }
 
 .brand-panel-strong {
   background:
-    linear-gradient(145deg, rgba(125, 220, 18, 0.11), transparent 40%),
+    linear-gradient(145deg, rgba(125, 220, 18, 0.13), transparent 40%),
     linear-gradient(315deg, rgba(198, 166, 79, 0.09), transparent 42%),
-    var(--frogman-panel-strong);
+    rgba(12, 20, 14, 0.93);
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.28), inset 0 1px rgba(255, 255, 255, 0.035);
+  backdrop-filter: blur(16px);
 }
 
 .brand-rule {
@@ -60,6 +79,14 @@ body {
 .brand-wordmark {
   color: var(--frogman-ink);
   text-shadow: 0 0 18px rgba(125, 220, 18, 0.18);
+}
+
+.brand-nav {
+  scrollbar-width: none;
+}
+
+.brand-nav::-webkit-scrollbar {
+  display: none;
 }
 
 .trade-input {
@@ -95,4 +122,25 @@ body {
 .calendar-button:hover {
   border-color: var(--frogman-green);
   color: var(--frogman-green);
+}
+
+@media (max-width: 767px) {
+  .brand-shell {
+    background:
+      linear-gradient(180deg, rgba(3, 8, 7, 0.82), rgba(4, 9, 7, 0.94) 54%, rgba(3, 7, 5, 0.98)),
+      linear-gradient(135deg, rgba(125, 220, 18, 0.08), transparent 36%),
+      url("/frogman-institutional-ocean-mobile.webp") center top / cover scroll,
+      var(--frogman-bg);
+  }
+
+  .brand-panel,
+  .brand-panel-strong {
+    backdrop-filter: blur(10px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .brand-shell {
+    background-attachment: scroll;
+  }
 }

@@ -79,33 +79,100 @@ export default function TradeControlPage() {
   const [selectedDay, setSelectedDay] = useState("");
   const [message, setMessage] = useState("");
   const [hydrated, setHydrated] = useState(false);
+  const [cloudStatus, setCloudStatus] = useState<"loading" | "online" | "offline">("loading");
+  const [pendingSyncIds, setPendingSyncIds] = useState<string[]>([]);
   const importRef = useRef<HTMLInputElement>(null);
+  const entriesRef = useRef<TradeEntry[]>([]);
+  const pendingSyncIdsRef = useRef<string[]>([]);
 
   useEffect(() => {
-    void fetch("/api/auth/me", { cache: "no-store" })
-      .then((response) => (response.ok ? response.json() : null))
-      .then((payload) => {
+    void (async () => {
+      const response = await fetch("/api/auth/me", { cache: "no-store" });
+      const payload = response.ok ? await response.json() : null;
         const session = (payload?.user ?? null) as UserSession | null;
         const key = `${storagePrefix}:${session?.email ?? "local"}`;
         setUser(session);
 
         try {
           const stored = JSON.parse(window.localStorage.getItem(key) || "{}");
-          setEntries(Array.isArray(stored.entries) ? stored.entries : []);
-          setFxRate(typeof stored.fxRate === "number" ? String(stored.fxRate) : "5.30");
+          const localEntries = Array.isArray(stored.entries) ? stored.entries as TradeEntry[] : [];
+          const localRate = typeof stored.fxRate === "number" ? stored.fxRate : 5.3;
+          const localPendingIds = Array.isArray(stored.pendingSyncIds) ? stored.pendingSyncIds.filter((id: unknown): id is string => typeof id === "string") : [];
+          setPendingSyncIds(localPendingIds);
+          const cloudResponse = session ? await fetch("/api/trades", { cache: "no-store" }) : null;
+
+          if (cloudResponse?.ok) {
+            const cloud = await cloudResponse.json() as { entries?: TradeEntry[]; fxRate?: number };
+            const cloudEntries = Array.isArray(cloud.entries) ? cloud.entries : [];
+            setEntries(cloudEntries.length ? cloudEntries : localEntries);
+            setFxRate(String(cloudEntries.length ? cloud.fxRate ?? localRate : localRate));
+            setCloudStatus("online");
+
+            if (!cloudEntries.length && (localEntries.length || localRate !== 5.3)) {
+              const migrationResponse = await fetch("/api/trades", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ entries: localEntries, fxRate: localRate }) });
+              if (migrationResponse.ok) setPendingSyncIds([]);
+              else {
+                setPendingSyncIds(localEntries.map((entry) => entry.id));
+                setCloudStatus("offline");
+              }
+            }
+          } else {
+            setEntries(localEntries);
+            setFxRate(String(localRate));
+            setCloudStatus("offline");
+          }
         } catch {
           setMessage("O arquivo local anterior não pôde ser lido. Importe um backup, se disponível.");
+          setCloudStatus("offline");
         } finally {
           setHydrated(true);
         }
-      });
+    })();
   }, []);
 
   useEffect(() => {
     if (!hydrated) return;
     const key = `${storagePrefix}:${user?.email ?? "local"}`;
-    window.localStorage.setItem(key, JSON.stringify({ entries, fxRate: numberOf(fxRate) }));
-  }, [entries, fxRate, hydrated, user?.email]);
+    window.localStorage.setItem(key, JSON.stringify({ entries, fxRate: numberOf(fxRate), pendingSyncIds }));
+  }, [entries, fxRate, hydrated, pendingSyncIds, user?.email]);
+
+  useEffect(() => { entriesRef.current = entries; }, [entries]);
+  useEffect(() => { pendingSyncIdsRef.current = pendingSyncIds; }, [pendingSyncIds]);
+
+  useEffect(() => {
+    if (!hydrated || !user) return;
+    const refresh = async () => {
+      try {
+        const pendingIds = pendingSyncIdsRef.current;
+        if (pendingIds.length) {
+          const pendingEntries = entriesRef.current.filter((entry) => pendingIds.includes(entry.id));
+          const retryResponse = await fetch("/api/trades", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ entries: pendingEntries }) });
+          if (!retryResponse.ok) { setCloudStatus("offline"); return; }
+          setPendingSyncIds((current) => current.filter((id) => !pendingIds.includes(id)));
+        }
+        const response = await fetch("/api/trades", { cache: "no-store" });
+        if (!response.ok) { setCloudStatus("offline"); return; }
+        const cloud = await response.json() as { entries?: TradeEntry[]; fxRate?: number };
+        if (Array.isArray(cloud.entries)) setEntries(cloud.entries);
+        if (typeof cloud.fxRate === "number") setFxRate(String(cloud.fxRate));
+        setCloudStatus("online");
+      } catch {
+        setCloudStatus("offline");
+      }
+    };
+    const timer = window.setInterval(() => void refresh(), 8000);
+    return () => window.clearInterval(timer);
+  }, [hydrated, user]);
+
+  useEffect(() => {
+    if (!hydrated || !user || cloudStatus === "loading") return;
+    const timer = window.setTimeout(() => {
+      void fetch("/api/trades", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ fxRate: Math.max(0.01, numberOf(fxRate)) }) })
+        .then((response) => setCloudStatus(response.ok ? "online" : "offline"))
+        .catch(() => setCloudStatus("offline"));
+    }, 700);
+    return () => window.clearTimeout(timer);
+  }, [cloudStatus, fxRate, hydrated, user]);
 
   const rate = Math.max(0.01, numberOf(fxRate));
   const visibleEntries = useMemo(
@@ -141,7 +208,7 @@ export default function TradeControlPage() {
     setForm((current) => ({ ...current, market, asset: market === "B3" ? "WIN" : "XAUUSD" }));
   }
 
-  function submitEntry(event: FormEvent<HTMLFormElement>) {
+  async function submitEntry(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const gross = numberOf(form.gross);
 
@@ -170,13 +237,37 @@ export default function TradeControlPage() {
 
     setEntries((current) => [entry, ...current]);
     setForm(blankForm(form.date, form.market));
-    setMessage(`${form.kind === "TRADE" ? "Operação" : "Movimentação"} registrada em ${form.market}.`);
+    try {
+      const response = await fetch("/api/trades", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ entry }) });
+      setCloudStatus(response.ok ? "online" : "offline");
+      if (response.ok) setPendingSyncIds((current) => current.filter((id) => id !== entry.id));
+      else setPendingSyncIds((current) => [...new Set([...current, entry.id])]);
+      setMessage(response.ok ? `${form.kind === "TRADE" ? "Operação" : "Movimentação"} registrada e sincronizada.` : "Lançamento salvo neste aparelho; a nuvem será tentada novamente.");
+    } catch {
+      setPendingSyncIds((current) => [...new Set([...current, entry.id])]);
+      setCloudStatus("offline");
+      setMessage("Lançamento salvo neste aparelho; a nuvem será tentada novamente.");
+    }
   }
 
-  function removeEntry(id: string) {
+  async function removeEntry(id: string) {
     if (!window.confirm("Excluir este lançamento? Essa ação não pode ser desfeita sem um backup.")) return;
+    const removed = entries.find((entry) => entry.id === id);
     setEntries((current) => current.filter((entry) => entry.id !== id));
-    setMessage("Lançamento excluído.");
+    let deleted = false;
+    try {
+      const response = await fetch("/api/trades", { method: "DELETE", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id }) });
+      deleted = response.ok;
+    } catch {}
+    if (!deleted && removed) {
+      setEntries((current) => [removed, ...current]);
+      setCloudStatus("offline");
+      setMessage("A exclusão não foi sincronizada e foi desfeita.");
+      return;
+    }
+    setPendingSyncIds((current) => current.filter((entryId) => entryId !== id));
+    setCloudStatus("online");
+    setMessage("Lançamento excluído em todos os aparelhos.");
   }
 
   function downloadBackup() {
@@ -205,7 +296,16 @@ export default function TradeControlPage() {
       if (!Array.isArray(payload.entries)) throw new Error("Formato inválido");
       setEntries(payload.entries);
       if (typeof payload.fxRate === "number") setFxRate(String(payload.fxRate));
-      setMessage(`${payload.entries.length} lançamentos importados.`);
+      try {
+        const response = await fetch("/api/trades", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ entries: payload.entries, fxRate: payload.fxRate ?? rate }) });
+        setCloudStatus(response.ok ? "online" : "offline");
+        setPendingSyncIds(response.ok ? [] : payload.entries.map((entry: TradeEntry) => entry.id));
+        setMessage(response.ok ? `${payload.entries.length} lançamentos importados e sincronizados.` : "Backup importado somente neste aparelho; a nuvem será tentada novamente.");
+      } catch {
+        setCloudStatus("offline");
+        setPendingSyncIds(payload.entries.map((entry: TradeEntry) => entry.id));
+        setMessage("Backup importado somente neste aparelho; a nuvem será tentada novamente.");
+      }
     } catch {
       setMessage("Backup inválido. Use um JSON exportado pelo próprio Frogman.");
     } finally {
@@ -230,7 +330,7 @@ export default function TradeControlPage() {
             </div>
           </div>
 
-          <nav className="flex max-w-full overflow-x-auto rounded border border-[#2b3a1d] bg-black/30 p-1 text-xs font-black uppercase tracking-[0.1em]">
+          <nav className="brand-nav flex max-w-full overflow-x-auto rounded border border-[#2b3a1d] bg-black/30 p-1 text-xs font-black uppercase tracking-[0.1em]">
             <Link href="/" className="whitespace-nowrap rounded px-4 py-2 text-zinc-400 hover:text-white">B3 / WIN</Link>
             <Link href="/internacional" className="whitespace-nowrap rounded px-4 py-2 text-zinc-400 hover:text-white">Internacional</Link>
             <Link href="/controle-trade" className="whitespace-nowrap rounded bg-[#7ddc12] px-4 py-2 text-black">Controle</Link>
@@ -238,6 +338,7 @@ export default function TradeControlPage() {
 
           <div className="flex flex-wrap items-center gap-2 text-xs">
             {user && <HeaderPill label={user.role === "admin" ? "Admin" : "Usuário"} value={user.name} />}
+            <HeaderPill label="Nuvem" value={cloudStatus === "online" ? "Sincronizada" : cloudStatus === "offline" ? "Modo local" : "Conectando"} />
             <button type="button" onClick={downloadCsv} className="rounded border border-zinc-700 px-3 py-2 font-bold uppercase text-zinc-200 hover:border-[#7ddc12]">CSV</button>
             <button type="button" onClick={downloadBackup} className="rounded border border-zinc-700 px-3 py-2 font-bold uppercase text-zinc-200 hover:border-[#7ddc12]">Backup</button>
             <button type="button" onClick={() => importRef.current?.click()} className="rounded border border-zinc-700 px-3 py-2 font-bold uppercase text-zinc-200 hover:border-[#7ddc12]">Importar</button>
@@ -249,10 +350,10 @@ export default function TradeControlPage() {
       </header>
 
       <div className="mx-auto max-w-[1500px] px-4 py-5 md:px-8">
-        <section className="brand-panel-strong rounded-lg border border-[#2b3a1d] p-5">
+        <section className="brand-panel-strong rounded-lg border border-[#2b3a1d] p-4 sm:p-5">
           <div className="flex flex-col gap-5 lg:flex-row lg:items-end lg:justify-between">
             <div>
-              <p className="text-xs font-black uppercase tracking-[0.2em] text-[#7ddc12]">Gestão financeira operacional</p>
+              <p className="text-[10px] font-black uppercase tracking-[0.2em] text-[#7ddc12] sm:text-xs">Frogman Performance Desk · Gestão financeira operacional</p>
               <h1 className="mt-2 text-3xl font-black text-white md:text-4xl">Controle de Trade</h1>
               <p className="mt-2 max-w-3xl text-sm leading-6 text-zinc-400">B3 e Pepperstone separados, com resultado realizado, custos, movimentações e calendário de consistência.</p>
             </div>
@@ -263,6 +364,12 @@ export default function TradeControlPage() {
                 </button>
               ))}
             </div>
+          </div>
+
+          <div className="mt-4 flex flex-wrap gap-2 border-t border-[#2b3a1d]/70 pt-4 text-[9px] font-black uppercase tracking-[0.12em] text-zinc-400 sm:text-[10px]">
+            <span className="rounded border border-blue-400/20 bg-blue-400/5 px-2.5 py-1.5 text-blue-200">B3 segregada</span>
+            <span className="rounded border border-amber-300/20 bg-amber-300/5 px-2.5 py-1.5 text-amber-100">Pepperstone em USD</span>
+            <span className="rounded border border-[#7ddc12]/20 bg-[#7ddc12]/5 px-2.5 py-1.5 text-[#caff91]">Nuvem + contingência local</span>
           </div>
 
           <div className="mt-5 grid gap-3 sm:grid-cols-2 xl:grid-cols-6">
@@ -278,7 +385,7 @@ export default function TradeControlPage() {
         {message && <div className="mt-4 rounded border border-[#7ddc12]/30 bg-[#7ddc12]/10 px-4 py-3 text-sm text-[#caff91]">{message}</div>}
 
         <section className="mt-4 grid gap-4 xl:grid-cols-[430px_1fr]">
-          <form onSubmit={submitEntry} className="brand-panel rounded-lg border border-[#223019] p-5">
+          <form onSubmit={submitEntry} className="brand-panel rounded-lg border border-[#223019] p-4 sm:p-5">
             <p className="text-xs font-black uppercase tracking-[0.18em] text-[#c6a64f]">Novo lançamento</p>
             <h2 className="mt-1 text-2xl font-black text-white">Registrar movimento</h2>
 
@@ -291,7 +398,7 @@ export default function TradeControlPage() {
 
             {form.kind === "TRADE" ? (
               <>
-                <div className="mt-3 grid grid-cols-2 gap-3">
+                <div className="mt-3 grid grid-cols-1 gap-3 min-[430px]:grid-cols-2">
                   <Field label="Ativo"><input required value={form.asset} onChange={(event) => setForm({ ...form, asset: event.target.value })} placeholder={form.market === "B3" ? "WIN, WDO, PETR4" : "XAUUSD, EURUSD, BTCUSD"} className="trade-input" /></Field>
                   <Field label="Direção"><select value={form.direction} onChange={(event) => setForm({ ...form, direction: event.target.value as "COMPRA" | "VENDA" })} className="trade-input"><option value="COMPRA">Compra</option><option value="VENDA">Venda</option></select></Field>
                   <Field label={form.market === "B3" ? "Contratos / quantidade" : "Lote / quantidade"}><input inputMode="decimal" value={form.quantity} onChange={(event) => setForm({ ...form, quantity: event.target.value })} className="trade-input" /></Field>
@@ -315,7 +422,7 @@ export default function TradeControlPage() {
           </form>
 
           <div className="space-y-4">
-            <section className="brand-panel rounded-lg border border-[#223019] p-5">
+            <section className="brand-panel rounded-lg border border-[#223019] p-3 sm:p-5">
               <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
                 <div><p className="text-xs font-black uppercase tracking-[0.18em] text-[#7ddc12]">Calendário</p><h2 className="mt-1 text-2xl font-black capitalize text-white">{month ? monthFormatter.format(new Date(`${month}-15T12:00:00`)) : "Mês"}</h2></div>
                 <div className="flex items-center gap-2">
@@ -328,11 +435,11 @@ export default function TradeControlPage() {
               <div className="mt-4 grid grid-cols-7 gap-1 text-center text-[10px] font-black uppercase text-zinc-500">{["Seg", "Ter", "Qua", "Qui", "Sex", "Sáb", "Dom"].map((day) => <div key={day} className="py-1">{day}</div>)}</div>
               <div className="grid grid-cols-7 gap-1">
                 {calendarDays.map((day, index) => day ? (
-                  <button key={day.date} type="button" onClick={() => setSelectedDay(day.date)} className={`min-h-20 rounded border p-2 text-left transition ${selectedDay === day.date ? "border-[#7ddc12]" : "border-zinc-800"} ${day.result > 0 ? "bg-[#7ddc12]/10" : day.result < 0 ? "bg-red-500/10" : "bg-black/20"}`}>
+                  <button key={day.date} type="button" onClick={() => setSelectedDay(day.date)} className={`min-h-16 rounded border p-1.5 text-left transition sm:min-h-20 sm:p-2 ${selectedDay === day.date ? "border-[#7ddc12]" : "border-zinc-800"} ${day.result > 0 ? "bg-[#7ddc12]/10" : day.result < 0 ? "bg-red-500/10" : "bg-black/20"}`}>
                     <span className="text-xs font-black text-zinc-400">{day.day}</span>
-                    {day.trades > 0 && <><p className={`mt-2 text-xs font-black ${day.result >= 0 ? "text-[#b9ff6a]" : "text-red-300"}`}>{compactMoney(day.result)}</p><p className="mt-1 text-[9px] text-zinc-500">{day.trades} trade{day.trades === 1 ? "" : "s"}</p></>}
+                    {day.trades > 0 && <><p className={`mt-1 overflow-hidden text-[9px] font-black sm:mt-2 sm:text-xs ${day.result >= 0 ? "text-[#b9ff6a]" : "text-red-300"}`}>{compactMoney(day.result)}</p><p className="mt-1 hidden text-[9px] text-zinc-500 min-[430px]:block">{day.trades} trade{day.trades === 1 ? "" : "s"}</p></>}
                   </button>
-                ) : <div key={`empty-${index}`} className="min-h-20 rounded border border-transparent" />)}
+                ) : <div key={`empty-${index}`} className="min-h-16 rounded border border-transparent sm:min-h-20" />)}
               </div>
 
               <div className="mt-4 grid gap-2 sm:grid-cols-4">
@@ -343,7 +450,7 @@ export default function TradeControlPage() {
               </div>
             </section>
 
-            <section className="brand-panel rounded-lg border border-[#223019] p-5">
+            <section className="brand-panel rounded-lg border border-[#223019] p-4 sm:p-5">
               <div className="flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
                 <div><p className="text-xs font-black uppercase tracking-[0.18em] text-[#c6a64f]">Consolidação</p><h2 className="mt-1 text-2xl font-black text-white">Curva dos últimos 6 meses</h2></div>
                 <Field label="USD/BRL para consolidação"><input inputMode="decimal" value={fxRate} onChange={(event) => setFxRate(event.target.value)} className="trade-input max-w-40" /></Field>
@@ -359,7 +466,7 @@ export default function TradeControlPage() {
           </div>
         </section>
 
-        <section className="mt-4 brand-panel rounded-lg border border-[#223019] p-5">
+        <section className="mt-4 brand-panel rounded-lg border border-[#223019] p-4 sm:p-5">
           <div className="flex flex-wrap items-end justify-between gap-3">
             <div><p className="text-xs font-black uppercase tracking-[0.18em] text-[#7ddc12]">Livro operacional</p><h2 className="mt-1 text-2xl font-black text-white">{selectedDay ? `Lançamentos de ${formatDate(selectedDay)}` : "Últimos lançamentos"}</h2></div>
             {selectedDay && <button type="button" onClick={() => setSelectedDay("")} className="rounded border border-zinc-700 px-3 py-2 text-xs font-bold text-zinc-300">Mostrar todos</button>}
@@ -368,7 +475,7 @@ export default function TradeControlPage() {
         </section>
 
         <footer className="mt-4 rounded-lg border border-[#223019] bg-black/25 p-4 text-xs leading-5 text-zinc-500">
-          Os dados ficam neste aparelho e navegador. Use <strong className="text-zinc-300">Backup</strong> regularmente para recuperar ou transferir o histórico. Valores em aberto não entram no lucro realizado.
+          Sincronização protegida pelo login entre navegador e PWA. O armazenamento local continua como contingência; use <strong className="text-zinc-300">Backup</strong> regularmente. Valores em aberto não entram no lucro realizado.
         </footer>
       </div>
     </main>
